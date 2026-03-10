@@ -1,0 +1,97 @@
+name: Traffic Light PR Automation
+
+on:
+  pull_request:
+    types: [labeled, unlabeled, opened, synchronize, reopened]
+
+jobs:
+
+  # JOB 1 - SAFETY CATCH
+  # Blocks the PR if no valid traffic light label is present.
+  validate-label:
+    name: "Check Traffic Light Label"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify a valid label is present
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const labels = context.payload.pull_request.labels.map(l => l.name);
+            const validLabels = ['red-light', 'green-light', 'yellow-light'];
+            const found = labels.find(l => validLabels.includes(l));
+
+            if (!found) {
+              core.setFailed(
+                '[BLOCKED] This PR is missing a Traffic Light label!\n\n' +
+                'Please add ONE of the following labels before merging:\n' +
+                '  red-light    - Requires manual review before merging\n' +
+                '  green-light  - Safe to auto-merge once all checks pass\n' +
+                '  yellow-light - Needs attention, manual merge required'
+              );
+            } else {
+              console.log('Valid label found: "' + found + '" - proceeding.');
+            }
+
+  # JOB 2 - AUTOMATION
+  # Only runs after Job 1 passes.
+  traffic-automation:
+    name: "Run Traffic Light Action"
+    needs: validate-label
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: write
+
+    steps:
+
+      # RED LIGHT - Request Review
+      # To customize reviewers: replace [owner] with ['username1', 'username2']
+      # For a team: add  team_reviewers: ['your-team-slug']
+      - name: "Request Review (red-light)"
+        if: contains(github.event.pull_request.labels.*.name, 'red-light')
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            await github.rest.pulls.requestReviewers({
+              owner: owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              reviewers: [owner]
+            });
+            console.log('Review requested from: ' + owner);
+
+      # GREEN LIGHT - Enable Auto-Merge
+      # REQUIREMENT: Enable "Allow auto-merge" in Settings > General.
+      - name: "Enable Auto-Merge (green-light)"
+        if: contains(github.event.pull_request.labels.*.name, 'green-light')
+        uses: actions/github-script@v7
+        with:
+          script: |
+            try {
+              const mutation = `
+                mutation($prId: ID!) {
+                  enablePullRequestAutoMerge(input: {
+                    pullRequestId: $prId,
+                    mergeMethod: MERGE
+                  }) {
+                    pullRequest {
+                      autoMergeRequest { enabledAt }
+                    }
+                  }
+                }`;
+              await github.graphql(mutation, { prId: context.payload.pull_request.node_id });
+              console.log('Auto-merge enabled. PR will merge once all checks pass.');
+            } catch (error) {
+              core.setFailed(
+                '[ERROR] Could not enable auto-merge.\n' +
+                'Fix: Go to Settings > General > Pull Requests > check "Allow auto-merge".\n' +
+                'Detail: ' + error.message
+              );
+            }
+
+      # YELLOW LIGHT - No automation, manual action required
+      - name: "Yellow Light - manual merge required"
+        if: contains(github.event.pull_request.labels.*.name, 'yellow-light')
+        run: |
+          echo "[yellow-light] No automation applied. A human must review and merge this PR manually."
