@@ -11,7 +11,6 @@ permissions:
 jobs:
 
   # JOB 1 - SAFETY CATCH
-  # Blocks the PR if no valid traffic light label is present.
   validate-label:
     name: "Check Traffic Light Label"
     runs-on: ubuntu-latest
@@ -38,7 +37,6 @@ jobs:
             }
 
   # JOB 2 - AUTOMATION
-  # Only runs after Job 1 passes.
   traffic-automation:
     name: "Run Traffic Light Action"
     needs: validate-label
@@ -65,7 +63,7 @@ jobs:
             });
             console.log('Review requested from: ' + owner);
 
-      # GREEN LIGHT - Enable Auto-Merge
+      # GREEN LIGHT - Enable Auto-Merge via REST API
       - name: "Enable Auto-Merge (green-light)"
         if: contains(github.event.pull_request.labels.*.name, 'green-light')
         uses: actions/github-script@v7
@@ -73,25 +71,37 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             try {
-              const mutation = `
-                mutation($prId: ID!) {
-                  enablePullRequestAutoMerge(input: {
-                    pullRequestId: $prId,
-                    mergeMethod: MERGE
-                  }) {
-                    pullRequest {
-                      autoMergeRequest { enabledAt }
-                    }
-                  }
-                }`;
-              await github.graphql(mutation, { prId: context.payload.pull_request.node_id });
-              console.log('Auto-merge enabled. PR will merge once all checks pass.');
+              await github.rest.pulls.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.pull_request.number,
+                auto_merge: {
+                  merge_method: 'merge'
+                }
+              });
+              console.log('Auto-merge enabled via REST. PR will merge once all checks pass.');
             } catch (error) {
-              core.setFailed(
-                '[ERROR] Could not enable auto-merge.\n' +
-                'Fix: Go to Settings > General > Pull Requests > check "Allow auto-merge".\n' +
-                'Detail: ' + error.message
-              );
+              // Fallback to GraphQL if REST doesn't support it
+              try {
+                const mutation = `
+                  mutation($prId: ID!) {
+                    enablePullRequestAutoMerge(input: {
+                      pullRequestId: $prId,
+                      mergeMethod: MERGE
+                    }) {
+                      pullRequest {
+                        autoMergeRequest { enabledAt }
+                      }
+                    }
+                  }`;
+                await github.graphql(mutation, { prId: context.payload.pull_request.node_id });
+                console.log('Auto-merge enabled via GraphQL.');
+              } catch (gqlError) {
+                core.setFailed(
+                  '[ERROR] Could not enable auto-merge.\n' +
+                  'Detail: ' + gqlError.message
+                );
+              }
             }
 
       # YELLOW LIGHT - No automation, manual action required
